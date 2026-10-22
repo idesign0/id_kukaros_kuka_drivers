@@ -56,6 +56,7 @@ int main(int argc, char ** argv)
 
         if (cpu >= 0)
         {
+#ifdef __linux__
           cpu_set_t cpuset;
           CPU_ZERO(&cpuset);
           CPU_SET(cpu, &cpuset);
@@ -70,6 +71,15 @@ int main(int argc, char ** argv)
           {
             RCLCPP_INFO(controller_manager->get_logger(), "CPU affinity set to core %d", cpu);
           }
+#else
+          // cpu_set_t / CPU_SET / pthread_setaffinity_np are glibc extensions. macOS has no
+          // public API to pin a thread to a specific core, so honour the parameter by
+          // reporting that it cannot be applied rather than failing the build.
+          (void)cpu;
+          RCLCPP_WARN(
+            controller_manager->get_logger(),
+            "CPU affinity not supported on this platform (non-Linux); 'cpu_affinity' ignored");
+#endif
         }
       }
 
@@ -96,7 +106,15 @@ int main(int argc, char ** argv)
 
       struct sched_param param;
       param.sched_priority = controller_manager->get_parameter_or<int>("thread_priority", 70);
-      if (sched_setscheduler(0, SCHED_FIFO, &param) == -1)
+#ifdef __linux__
+      const bool sched_failed = (sched_setscheduler(0, SCHED_FIFO, &param) == -1);
+#else
+      // macOS has no sched_setscheduler. pthread_setschedparam is the per-thread
+      // equivalent and is what the process's control thread actually needs here.
+      const bool sched_failed =
+        (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) != 0);
+#endif
+      if (sched_failed)
       {
         RCLCPP_ERROR(controller_manager->get_logger(), "setscheduler error");
         RCLCPP_ERROR(controller_manager->get_logger(), strerror(errno));
